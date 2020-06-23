@@ -12,10 +12,12 @@
 
 // region: mod, extern and use statements
 mod extract_and_save_mod;
+mod qvs20_error_mod;
 mod qvs20_reader_mod;
 mod qvs20_schema_mod;
 mod qvs20_table_mod;
 mod qvs20_writer_mod;
+
 mod utils_mod;
 
 //use unwrap::unwrap;
@@ -44,18 +46,22 @@ fn main() {
     // extract_and_save_mod::extract_and_save();
     //use qvs20_table_mod::*;
     //use std::str;
-    let s = r"[crates \] table]
-[String][String][String][Integer][String]
-[][][][][]
-[name][description][repository][id][last_version]
-[name_1][A small git 1][https://github.com/ 1][1601][0.1.1]
-[name_2][A small git 2][https://github.com/ 2][1602][0.1.2]
-[name_3][A small git 3][https://github.com/ 3][1603][0.1.3]
-[name_4][A small git 4][https://github.com/ 4][1604][0.1.4]
-[name_5][ 5][https://github.com/ 5][1][0\[1\]\n5]
-";
+    let s = r"[t]\n";
+    /*[crates table]
+    [String[String][String][Integer][String]
+    [][][][][]
+    [name][description][repository][id][last_version]
+    [name_1][A small git 1][https://github.com/ 1][1601][0.1.1]
+    [name_2][A small git 2][https://github.com/ 2][1602][0.1.2]
+    [name_3][A small git 3][https://github.com/ 3][1603][0.1.3]
+    [name_4][A small git 4][https://github.com/ 4][1604][0.1.4]
+    [name_5][ 5][https://github.com/ 5][1][0\[1\]\n5]
+    ";*/
+    
     let table = qvs20_table_mod::Table::from_qvs20_with_schema(s.as_bytes());
-    dbg!(&table);
+    //dbg!(&table);
+    let err = table.unwrap_err();
+    println!("{}", err);
 }
 
 // region: different function code for Linux and Windows

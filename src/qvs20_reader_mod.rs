@@ -2,26 +2,19 @@
 
 use thiserror::Error;
 
-#[derive(Error, Debug, Eq, PartialEq)]
-pub enum Qvs20Error {
+#[derive(Error, Debug)]
+pub enum Qvs20ErrorReader {
     // reader
     #[error("Error: The field must start with [. pos: {pos}")]
-    NoFieldStart { pos: usize},
+    NoFieldStart { pos: usize },
     #[error("Error: Last bracket is missing. pos: {pos}")]
-    NoFieldEnd { pos: usize},
+    NoFieldEnd { pos: usize },
     #[error("Error: Last row delimiter is missing. pos: {pos}")]
-    NoLastRowDelimiter { pos: usize},
+    NoLastRowDelimiter { pos: usize },
     #[error("Error: The row delimiter has more than 1 byte. pos: {pos}")]
-    RowDelimiterMoreThan1Byte { pos: usize},
-    // table
-    #[error("Error in first row: table name.")]
-    ErrorInFirstRowTableName,
-    #[error("Error in first row: row delimiter.")]
-    ErrorInFirstRowRowDelimiter,
-    #[error("Error in second row: data type.")]
-    ErrorInSecondRowDataType,
-    //#[error("unknown error")]
-    //Unknown,
+    RowDelimiterMoreThan1Byte { pos: usize },
+    #[error("Error: Premature end of file. pos: {pos}")]
+    PrematureEndOfFile { pos: usize },
 }
 
 /// ReaderForQvs20
@@ -86,9 +79,9 @@ impl<'a> ReaderForQvs20<'a> {
 }
 
 impl<'a> Iterator for ReaderForQvs20<'a> {
-    type Item = Result<Token<'a>, Qvs20Error>;
+    type Item = Result<Token<'a>, Qvs20ErrorReader>;
     /// Reads the next token. Return None when EndOfFile. Can return Error.
-    fn next(&mut self) -> Option<Result<Token<'a>, Qvs20Error>> {
+    fn next(&mut self) -> Option<Result<Token<'a>, Qvs20ErrorReader>> {
         if self.input.is_empty() {
             return None;
         }
@@ -99,9 +92,16 @@ impl<'a> Iterator for ReaderForQvs20<'a> {
                     if self.input[self.cursor_pos] == b'[' {
                         self.cursor_state = CursorState::InsideOfField;
                         self.cursor_pos += 1;
+                        if self.cursor_pos >= self.input.len() {
+                            return Some(Err(Qvs20ErrorReader::PrematureEndOfFile {
+                                pos: self.cursor_pos,
+                            }));
+                        }
                     // continue loop
                     } else {
-                        return Some(Err(Qvs20Error::NoFieldStart{pos:self.cursor_pos}));
+                        return Some(Err(Qvs20ErrorReader::NoFieldStart {
+                            pos: self.cursor_pos,
+                        }));
                     }
                 }
                 CursorState::InsideOfField => {
@@ -109,7 +109,12 @@ impl<'a> Iterator for ReaderForQvs20<'a> {
                     while let Some(pos) = Self::find_u8_from(self.input, self.cursor_pos, b']') {
                         if self.input[pos - 1] == b'\\' {
                             // if before the delimiter is \ (escaped), then find the next
-                            self.cursor_pos = pos + 1;
+                            self.cursor_pos += 1;
+                            if self.cursor_pos >= self.input.len() {
+                                return Some(Err(Qvs20ErrorReader::PrematureEndOfFile {
+                                    pos: self.cursor_pos,
+                                }));
+                            }
                         //continue while
                         } else {
                             self.cursor_pos = pos;
@@ -117,7 +122,9 @@ impl<'a> Iterator for ReaderForQvs20<'a> {
                         }
                     }
                     if self.input[self.cursor_pos] != b']' {
-                        return Some(Err(Qvs20Error::NoFieldEnd{pos:self.cursor_pos}));
+                        return Some(Err(Qvs20ErrorReader::NoFieldEnd {
+                            pos: self.cursor_pos,
+                        }));
                     }
                     let end_pos = self.cursor_pos;
                     self.cursor_pos += 1;
@@ -126,7 +133,9 @@ impl<'a> Iterator for ReaderForQvs20<'a> {
                 }
                 CursorState::OutsideOfField => {
                     if self.cursor_pos >= self.input.len() {
-                        return Some(Err(Qvs20Error::NoLastRowDelimiter{pos:self.cursor_pos}));
+                        return Some(Err(Qvs20ErrorReader::NoLastRowDelimiter {
+                            pos: self.cursor_pos,
+                        }));
                     } else if self.input[self.cursor_pos] == b'[' {
                         self.cursor_state = CursorState::StartOfField;
                     } else {
@@ -145,7 +154,9 @@ impl<'a> Iterator for ReaderForQvs20<'a> {
                         self.cursor_pos += 1;
                         return Some(Ok(Token::RowDelimiter(self.input[start_pos])));
                     } else {
-                        return Some(Err(Qvs20Error::RowDelimiterMoreThan1Byte{pos:self.cursor_pos}));
+                        return Some(Err(Qvs20ErrorReader::RowDelimiterMoreThan1Byte {
+                            pos: self.cursor_pos,
+                        }));
                     }
                 }
                 CursorState::EndOfFile => {
@@ -162,12 +173,12 @@ mod test {
     use super::*;
     use unwrap::unwrap;
     #[test]
-    pub fn test_01() {
+    pub fn test_01_well_formed() {
+        // fields, escaped, row_delimiter, eof
         let mut rdr = ReaderForQvs20::new(
             r"[one][two][1\\2\]3\[4\n5\r6\t]
 [four]
-"
-            .as_bytes(),
+".as_bytes(),
         );
         // first field
         let token = unwrap!(unwrap!(rdr.next()));
@@ -179,7 +190,6 @@ mod test {
         let token = unwrap!(unwrap!(rdr.next()));
         // here is raw bytes, not unescaped
         assert_eq!(token, Token::Field(r"1\\2\]3\[4\n5\r6\t".as_bytes()));
-
         // row_delimiter only one byte
         let token = unwrap!(unwrap!(rdr.next()));
         assert_eq!(token, Token::RowDelimiter(b'\n'));
@@ -190,58 +200,99 @@ mod test {
         let token = unwrap!(unwrap!(rdr.next()));
         assert_eq!(token, Token::RowDelimiter(b'\n'));
         // None is returned to signal the end for iter()
-        // let next = rdr.next();
-        // assert_eq!(next, None);
+        let next = rdr.next();
+        assert!(next.is_none());
     }
+    
     #[test]
-    pub fn test_02() {
+    pub fn test_02_not_field() {
         let mut rdr = ReaderForQvs20::new("this is not a field".as_bytes());
         // first field
         let result = unwrap!(rdr.next());
-        assert_eq!(result.err().unwrap(), Qvs20Error::NoFieldStart{pos:0});
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            Qvs20ErrorReader::NoFieldStart { pos: 0 }.to_string()
+        );
     }
+    
     #[test]
-    pub fn test_02a() {
+    pub fn test_03_empty() {
         let mut rdr = ReaderForQvs20::new("".as_bytes());
         // first field
         let opt_result = rdr.next();
-        assert_eq!(opt_result, None);
+        assert!(opt_result.is_none());
     }
+    
     #[test]
-    pub fn test_03() {
+    pub fn test_04_premature() {
+        let mut rdr = ReaderForQvs20::new("[".as_bytes());
+        // first field
+        let result = unwrap!(rdr.next());
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "Error: Premature end of file. pos: 1");
+    }
+
+    #[test]
+    pub fn test_05_no_last_bracket() {
         let mut rdr = ReaderForQvs20::new("[no last bracket".as_bytes());
         // first field
         let result = unwrap!(rdr.next());
-        assert_eq!(result.err().unwrap(), Qvs20Error::NoFieldEnd{pos:1});
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            Qvs20ErrorReader::NoFieldEnd { pos: 1 }.to_string()
+        );
     }
+    
     #[test]
-    pub fn test_04() {
+    pub fn test_06_no_last_bracket() {
         let mut rdr = ReaderForQvs20::new("[one][no last bracket".as_bytes());
         // first field
         let token = unwrap!(unwrap!(rdr.next()));
         assert_eq!(token, Token::Field("one".as_bytes()));
         // second field
         let result = unwrap!(rdr.next());
-        assert_eq!(result.err().unwrap(), Qvs20Error::NoFieldEnd{pos:6});
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            Qvs20ErrorReader::NoFieldEnd { pos: 6 }.to_string()
+        );
     }
     #[test]
-    pub fn test_05() {
+    pub fn test_07_premature_end() {
+        let mut rdr = ReaderForQvs20::new("[escaped \\]".as_bytes());
+        let result = unwrap!(rdr.next());
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "Error: Premature end of file. pos: 11"
+        );
+    }
+    
+    #[test]
+    pub fn test_08_no_row_delimiter() {
         let mut rdr = ReaderForQvs20::new("[one]".as_bytes());
         // first field
         let token = unwrap!(unwrap!(rdr.next()));
         assert_eq!(token, Token::Field("one".as_bytes()));
         // second field
         let result = unwrap!(rdr.next());
-        assert_eq!(result.err().unwrap(), Qvs20Error::NoLastRowDelimiter{pos:5});
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            Qvs20ErrorReader::NoLastRowDelimiter { pos: 5 }.to_string()
+        );
     }
+    
     #[test]
-    pub fn test_06() {
+    pub fn test_09_row_delimiter_too_big() {
         let mut rdr = ReaderForQvs20::new("[one]\n\n".as_bytes());
         // first field
         let token = unwrap!(unwrap!(rdr.next()));
         assert_eq!(token, Token::Field("one".as_bytes()));
         // second field
         let result = unwrap!(rdr.next());
-        assert_eq!(result.err().unwrap(),Qvs20Error::RowDelimiterMoreThan1Byte{pos:5});
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            Qvs20ErrorReader::RowDelimiterMoreThan1Byte { pos: 5 }.to_string()
+        );
     }
+    
 }
